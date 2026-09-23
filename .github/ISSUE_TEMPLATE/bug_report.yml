@@ -1,0 +1,33 @@
+name: Bug report
+description: Something in this repository is wrong or does not work.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please do not include API keys, passwords, phone numbers or other personal data.
+        To report a security vulnerability, email security@packetexchange.io instead of opening an issue.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps, requests or files that shows the problem.
+    validations:
+      required: true
+  - type: input
+    id: request-id
+    attributes:
+      label: Request id
+      description: The X-Request-Id response header, if an API request was involved.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Tool names and versions, operating system, and anything else that may matter.

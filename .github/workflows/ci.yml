@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate specification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Check the document describes only the public API
+        run: npm run check
+
+      - name: Check the YAML edition matches the JSON edition
+        run: npm run check:yaml
+
+      - name: Lint with Redocly CLI
+        run: npm run lint

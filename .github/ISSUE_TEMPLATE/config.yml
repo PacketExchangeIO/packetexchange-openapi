@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: API questions and account support
+    url: https://packetexchange.io/developers
+    about: Developer documentation, or email support@packetexchange.io for help with your account.
+  - name: Report a security vulnerability
+    url: https://github.com/PacketExchangeIO/packetexchange-openapi/security/policy
+    about: Please email security@packetexchange.io instead of opening a public issue.

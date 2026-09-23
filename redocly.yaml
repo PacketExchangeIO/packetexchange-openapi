@@ -1,0 +1,9 @@
+# Redocly CLI configuration used by `npm run lint` and CI.
+extends:
+  - recommended
+
+rules:
+  # Several nullable properties wrap a $ref in allOf, the usual OpenAPI 3.0 way to make
+  # a referenced schema nullable. The recommended ruleset asks for a sibling `type` as
+  # well; report these as warnings until the source document adds one.
+  nullable-type-sibling: warn
