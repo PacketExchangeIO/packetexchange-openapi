@@ -30,6 +30,7 @@ info:
     | 401 | `MISSING_TOKEN` | POST /auth/refresh was called without a refresh token. |
     | 402 | `SWITCH_SUBSCRIPTION_REQUIRED` | The Switch endpoint needs an active Switch plan or trial on the account. |
     | 403 | `FORBIDDEN` | Authenticated but not allowed. For a scoped API key the message names the missing scope ("API key missing required scope: sms:send"); session-only endpoints answer "This action requires an interactive session (dashboard login), not an API key." |
+    | 403 | `TEST_KEY_NOT_ALLOWED` | A test key (wmmn_test_sk_) asked for something that has no test mode: a Switch change (any non-GET request under /switch) or an x402 top-up, which settles real USDC into the live balance. Use a live key. Test keys may still read Switch data. |
     | 403 | `CSRF_BLOCKED` | A cross-site request tried to use the browser refresh cookie. |
     | 403 | `KYC_REQUIRED` | The action needs a verified identity first (Account > Verification). |
     | 404 | `NOT_FOUND` | The resource does not exist, or it is not visible to your account. |
@@ -52,7 +53,7 @@ info:
     | 503 | `SWITCH_PRICE_MISMATCH` | Switch billing: this plan cannot be bought online right now. Contact sales. |
     | 503 | `WIRE_UNAVAILABLE` | Wire top-ups are not available right now. |
     | 503 | `AI_UNAVAILABLE` | Switch AI Control cannot reach its model. Nothing was changed; the manual controls still work. |
-  version: 1.1.0
+  version: 1.2.0
 servers:
   - url: https://packetexchange.io
     description: Production
@@ -89,6 +90,8 @@ tags:
     description: Place single calls and send single SMS over the routes you bought, and read their history.
   - name: Verify
     description: 'One-time passcodes by SMS or voice call: send a code, then check what the user typed. We keep only a hash of the code.'
+  - name: Number lookup
+    description: Validate a number and see its country, line type, network, risk and cheapest live price. Prefix-based, free.
   - name: Phone numbers
     description: 'The DID Store: search, buy, route and release phone numbers; SMS and softphone lines on them.'
   - name: Billing
@@ -2659,6 +2662,7 @@ paths:
                       - application:write
                       - switch:manage
                       - verify:write
+                      - webhooks:write
                   minItems: 1
                 environment:
                   type: string
@@ -2794,6 +2798,7 @@ paths:
                       - application:write
                       - switch:manage
                       - verify:write
+                      - webhooks:write
                   minItems: 1
     delete:
       operationId: deleteAccountApiKeysById
@@ -2894,11 +2899,11 @@ paths:
         - Webhooks
       summary: Create a webhook endpoint
       description: |-
-        The signing secret is returned ONCE in `secret`. URLs must be https and resolve to a public address.
+        The signing secret is returned ONCE in `secret`. URLs must be https and resolve to a public address. Works from a dashboard session, or with an API key that was created with the `webhooks:write` permission. A full-access key does not include `webhooks:write`: it has to be chosen explicitly, so keys issued before this permission existed cannot manage endpoints.
 
         Each delivery is a POST of `{ event, data, timestamp }` with headers `X-Webhook-Event`, `X-Webhook-Id` (the delivery id), `X-PX-Timestamp` (Unix seconds at send time) and two signatures: `X-PX-Signature: v1=<hex HMAC-SHA256 of "<timestamp>.<raw body>">` (verify this one, and reject timestamps more than 5 minutes old to stop replays) and the legacy `X-Webhook-Signature: sha256=<hex HMAC-SHA256 of the raw body>`, kept during the transition.
 
-        **Auth:** dashboard session (JWT) only. API keys are refused with 403 so a leaked key can never perform this action.
+        **Auth:** API key or JWT. Scoped keys need `webhooks:write`.
       responses:
         '201':
           description: Success.
@@ -2928,9 +2933,11 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/ServerError'
-      x-auth: session
+      x-auth: key
+      x-required-scope: webhooks:write
       security:
         - bearerAuth: []
+        - apiKeyAuth: []
       requestBody:
         required: true
         content:
@@ -2947,8 +2954,13 @@ paths:
                     type: string
                     enum:
                       - call.completed
+                      - call.ringing
+                      - call.answered
+                      - call.gathered
                       - sms.sent
                       - sms.dlr
+                      - sms.delivered
+                      - sms.failed
                       - campaign.started
                       - campaign.completed
                       - topup.confirmed
@@ -2988,9 +3000,9 @@ paths:
         - Webhooks
       summary: Update a webhook endpoint
       description: |-
-        Change the URL, the subscribed events or `isActive`. The signing secret and delivery history are kept.
+        Change the URL, the subscribed events or `isActive`. The signing secret and delivery history are kept. Works from a dashboard session, or with an API key that was created with the `webhooks:write` permission. A full-access key does not include `webhooks:write`: it has to be chosen explicitly, so keys issued before this permission existed cannot manage endpoints.
 
-        **Auth:** dashboard session (JWT) only. API keys are refused with 403 so a leaked key can never perform this action.
+        **Auth:** API key or JWT. Scoped keys need `webhooks:write`.
       responses:
         '200':
           description: Success.
@@ -3022,9 +3034,11 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/ServerError'
-      x-auth: session
+      x-auth: key
+      x-required-scope: webhooks:write
       security:
         - bearerAuth: []
+        - apiKeyAuth: []
       parameters:
         - name: id
           in: path
@@ -3047,8 +3061,13 @@ paths:
                     type: string
                     enum:
                       - call.completed
+                      - call.ringing
+                      - call.answered
+                      - call.gathered
                       - sms.sent
                       - sms.dlr
+                      - sms.delivered
+                      - sms.failed
                       - campaign.started
                       - campaign.completed
                       - topup.confirmed
@@ -3086,9 +3105,9 @@ paths:
         - Webhooks
       summary: Delete a webhook endpoint
       description: |-
-        Removes the endpoint, its secret and its delivery history. Events stop immediately.
+        Removes the endpoint, its secret and its delivery history. Events stop immediately. Works from a dashboard session, or with an API key that was created with the `webhooks:write` permission. A full-access key does not include `webhooks:write`: it has to be chosen explicitly, so keys issued before this permission existed cannot manage endpoints.
 
-        **Auth:** dashboard session (JWT) only. API keys are refused with 403 so a leaked key can never perform this action.
+        **Auth:** API key or JWT. Scoped keys need `webhooks:write`.
       responses:
         '200':
           description: Success.
@@ -3131,9 +3150,11 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/ServerError'
-      x-auth: session
+      x-auth: key
+      x-required-scope: webhooks:write
       security:
         - bearerAuth: []
+        - apiKeyAuth: []
       parameters:
         - name: id
           in: path
@@ -3147,9 +3168,9 @@ paths:
         - Webhooks
       summary: Rotate a webhook signing secret
       description: |-
-        Issues a new secret, returned once. Deliveries are signed with it from this moment (including pending retries); there is no overlap window, so update your receiver at the same time.
+        Issues a new secret, returned once. Deliveries are signed with it from this moment (including pending retries); there is no overlap window, so update your receiver at the same time. Works from a dashboard session, or with an API key that was created with the `webhooks:write` permission. A full-access key does not include `webhooks:write`: it has to be chosen explicitly, so keys issued before this permission existed cannot manage endpoints.
 
-        **Auth:** dashboard session (JWT) only. API keys are refused with 403 so a leaked key can never perform this action.
+        **Auth:** API key or JWT. Scoped keys need `webhooks:write`.
       responses:
         '200':
           description: Success.
@@ -3183,8 +3204,13 @@ paths:
                           type: string
                           enum:
                             - call.completed
+                            - call.ringing
+                            - call.answered
+                            - call.gathered
                             - sms.sent
                             - sms.dlr
+                            - sms.delivered
+                            - sms.failed
                             - campaign.started
                             - campaign.completed
                             - topup.confirmed
@@ -3263,9 +3289,11 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '500':
           $ref: '#/components/responses/ServerError'
-      x-auth: session
+      x-auth: key
+      x-required-scope: webhooks:write
       security:
         - bearerAuth: []
+        - apiKeyAuth: []
       parameters:
         - name: id
           in: path
@@ -4946,7 +4974,7 @@ paths:
         - Marketplace routes
       summary: Price a phone number across the marketplace
       description: |-
-        Every buyer-visible route that serves the number, at the rate it would actually charge for it, cheapest first. A route with a rate sheet is priced by its longest matching active prefix (if that row is blocked the route does not serve the number); a single-price route serves it when a listed prefix, or failing that its country code, starts the number. This is the public list price: negotiated prices and private grants are not applied. The number is normalised to digits (a leading 00 is dropped). At most 100 routes are returned; `total` counts all of them. An embargoed destination returns no routes and `notice: "sanctioned"`. Seller identities are never included.
+        Every buyer-visible route that serves the number, at the rate it would actually charge for it, cheapest first. A route with a rate sheet is priced by its longest matching active prefix (if that row is blocked the route does not serve the number); a single-price route serves it when a listed prefix, or failing that its country code, starts the number. This is the public list price: negotiated prices and private grants are not applied. SMS prices are by destination network on routes that price a country per mobile network: `network` says which network `rate` is for and `countryRate` is the price for other or unknown networks. The network is determined from the number's range (ported numbers may be priced at the network the range belongs to). The number is normalised to digits (a leading 00 is dropped). At most 100 routes are returned; `total` counts all of them. An embargoed destination returns no routes and `notice: "sanctioned"`. Seller identities are never included.
 
         **Auth:** optional - works anonymously; a token or API key personalises the answer.
 
@@ -7770,6 +7798,66 @@ paths:
                   description: Narrow to these routes; never widens the set
               required:
                 - method
+  /api/v1/lookup/{number}:
+    get:
+      operationId: getLookupByNumber
+      tags:
+        - Number lookup
+      summary: Look up a phone number
+      description: |-
+        Validates and formats an E.164 number and tells you what its prefix is on the exchange: country, line type (mobile, fixed, toll free, premium), the network where the rate decks agree, whether it is a blocked or high-risk destination, and the cheapest live public price to reach it by voice and by SMS (the same logic as `GET /routes/price-number`).
+
+        SMS prices are by destination network where the route prices per network: `pricing.sms.network` says which network the price is for and `pricing.sms.countryRate` is the price for other or unknown networks. The network is determined from the number's range (ported numbers may be priced at the network the range belongs to).
+
+        **Prefix-based.** No carrier HLR query is made, so the answer cannot tell you whether the number is in service or has been ported. It is free, needs no key (a scoped key needs `routes:read`), and is limited to 60 lookups a minute per caller. Send the number in international format (`+447700900123` or `00447700900123`; spaces and dashes are ignored). A malformed number answers 200 with `valid: false` and a `reason`.
+
+        **Auth:** optional - works anonymously; a token or API key personalises the answer.
+
+        **Rate limit:** 60 requests per minute per caller.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    $ref: '#/components/schemas/NumberLookup'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+      x-auth: optional
+      x-rate-limit:
+        max: 60
+        window: minute
+      security:
+        - {}
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - name: number
+          in: path
+          required: true
+          schema:
+            type: string
+            description: The number in international format; URL-encode the leading + as %2B or omit it
   /api/v1/routes/my/listing-health:
     get:
       operationId: getRoutesMyListingHealth
@@ -9385,6 +9473,32 @@ paths:
                         nullable: true
                       status:
                         type: string
+                      mccMnc:
+                        type: string
+                        nullable: true
+                        description: 'SMS sheets priced by network code: the network the row price came from ("214" = whole country)'
+                      operatorRates:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            mccMnc:
+                              type: string
+                              description: '"214-07" for one network; "214" for All Operators'
+                            operator:
+                              type: string
+                              nullable: true
+                            rate:
+                              $ref: '#/components/schemas/Money'
+                          required:
+                            - mccMnc
+                            - operator
+                            - rate
+                        nullable: true
+                        description: 'SMS sheets priced by network: the price per destination network (charged per network when `networkPriced` is true). A message is charged its network''s rate (networks not listed pay the All Operators rate when there is one); `ratePerUnit` is the price for other or unknown networks. The network is determined from the number''s range (ported numbers may be priced at the network the range belongs to)'
+                      networkPriced:
+                        type: boolean
+                        description: True when each SMS on this row is charged its destination network's rate from `operatorRates`; `ratePerUnit` then applies to other or unknown networks
                       updated:
                         type: boolean
                     required:
@@ -10851,7 +10965,7 @@ paths:
         - Top-ups
       summary: Top up with an x402 USDC payment
       description: |-
-        Pay-per-request top-up using the x402 protocol. Call once without an `X-PAYMENT` header to receive a 402 challenge with the payment requirements; retry with a signed `X-PAYMENT` header to settle and be credited in the same request. A replayed payment returns the original top-up with `already: true`. Requires identity verification when the platform enforces it (403 `KYC_REQUIRED`), and is subject to account flags and top-up velocity limits.
+        Pay-per-request top-up using the x402 protocol. Call once without an `X-PAYMENT` header to receive a 402 challenge with the payment requirements; retry with a signed `X-PAYMENT` header to settle and be credited in the same request. A replayed payment returns the original top-up with `already: true`. It settles real USDC on Base mainnet into your live balance, so test keys are refused with 403 `TEST_KEY_NOT_ALLOWED`. Requires identity verification when the platform enforces it (403 `KYC_REQUIRED`), and is subject to account flags and top-up velocity limits.
 
         **Auth:** API key or JWT. Scoped keys need `billing:write`.
       responses:
@@ -10921,6 +11035,7 @@ paths:
       x-required-scope: billing:write
       x-error-codes:
         - KYC_REQUIRED
+        - TEST_KEY_NOT_ALLOWED
       security:
         - bearerAuth: []
         - apiKeyAuth: []
@@ -15752,7 +15867,7 @@ paths:
         - Purchases
       summary: Buy access to a marketplace route
       description: |-
-        No upfront cost: usage is billed per minute or message from your balance. A test API key creates a test purchase.
+        No upfront cost: usage is billed per minute or message from your balance. Requires a LIVE API key: a test key is refused with 400.
 
         **Auth:** API key or JWT. Scoped keys need `purchases:write`.
       responses:
@@ -18797,6 +18912,8 @@ paths:
         Names must be unique per operator. Defaults: priority selection, 3 attempts, the platform failover timeout.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -19071,6 +19188,8 @@ paths:
         Send `failoverTimeoutSeconds: null` to go back to the platform budget; omit it to leave it unchanged.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -19169,6 +19288,8 @@ paths:
         Customers assigned to it are detached and fall back to their routing strategy.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -19234,7 +19355,10 @@ paths:
       tags:
         - 'Switch: routing'
       summary: Clone a route group with all its suppliers
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -19307,6 +19431,8 @@ paths:
         Up to 200 entries, each naming exactly one supplier: a marketplace route you bought or one of your active supplier trunks. Duplicate supplier for the same prefix is refused.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -19627,7 +19753,10 @@ paths:
       tags:
         - 'Switch: routing'
       summary: Create a dialplan
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -19883,7 +20012,10 @@ paths:
       tags:
         - 'Switch: routing'
       summary: Rename, describe, enable or disable a dialplan
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -19958,7 +20090,10 @@ paths:
       tags:
         - 'Switch: routing'
       summary: Delete a dialplan
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -20028,6 +20163,8 @@ paths:
         Cloned rules keep their route-group targets.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -20100,6 +20237,8 @@ paths:
         Up to 200 rules, evaluated in `position` order. A route_group action must name one of your route groups; regular expressions that risk catastrophic backtracking are refused.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -20454,6 +20593,8 @@ paths:
         Sets the dialplan, route group, failover group, strategy or a direct supplier on the customer's first trunk. Use the per-trunk routing endpoint for a specific trunk. Send `X-If-Unchanged-Since: <updatedAt you loaded>` to have the save refused with 409 STALE_WRITE if someone changed the record since.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -20788,6 +20929,8 @@ paths:
         Explains the routing decision end to end: normalisation, the policy matched, the sell price, every eligible supplier with its buy rate, capacity and margin, and why each excluded supplier was excluded. Uses the same resolvers as live calls but is NOT a call: no call record, balance movement or capacity use. The result is kept for an hour so it can be saved.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -20871,6 +21014,8 @@ paths:
         Keeps a trace run within the last hour, by its traceId, with an optional note. The stored copy is the server's own result. Saving the same trace twice returns `alreadySaved: true`.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -21155,7 +21300,10 @@ paths:
       tags:
         - 'Switch: routing'
       summary: Delete a saved route trace
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -21928,6 +22076,8 @@ paths:
         If `sipPassword` is set it is echoed back ONCE in the response.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -22273,6 +22423,8 @@ paths:
         Setting `status` to disabled stops new calls but keeps the trunk configurable. A `sipPassword` sent here is echoed back once. Archived trunks are frozen: restore first. Send `X-If-Unchanged-Since: <updatedAt you loaded>` to have the save refused with 409 STALE_WRITE if someone changed the record since.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -22520,6 +22672,8 @@ paths:
         Refused, naming the dependency, once the trunk has carried traffic, holds rates or routing, or is the customer's last trunk. Archive it instead. Check removability first.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -22650,6 +22804,8 @@ paths:
         Takes the trunk out of service and out of operational lists, and freezes it. Nothing is destroyed; restore brings it back disabled.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -22724,6 +22880,8 @@ paths:
         Comes back disabled, so no traffic starts until you enable it.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -23020,6 +23178,8 @@ paths:
         Copies the trunk's settings and sell rates to a new trunk on the same customer.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -23263,6 +23423,8 @@ paths:
         Stored in canonical form. Refused when it cannot be saved (see addresses/preview); overlaps with other entries are returned in `conflicts`. Applies to new calls only.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -23449,6 +23611,8 @@ paths:
         Read-only: the canonical form, size, whether it would be refused, and what it overlaps.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -23582,6 +23746,8 @@ paths:
         Dry run; saves nothing and needs no trunk.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -23656,7 +23822,10 @@ paths:
       tags:
         - 'Switch: customer trunks'
       summary: Remove an allowed source address from a trunk
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -23745,6 +23914,8 @@ paths:
         Route group, failover group, dialplan, strategy or a direct supplier for this trunk. Send `X-If-Unchanged-Since: <updatedAt you loaded>` to have the save refused with 409 STALE_WRITE if someone changed the record since.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -24023,6 +24194,8 @@ paths:
         Creates the customer, a "Default" trunk carrying the same credentials and limits, an empty routing row, and the customer's first API key. The SIP password and API key are returned ONCE in this response.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -24393,6 +24566,8 @@ paths:
         Any field from create, all optional. A `status` change is applied as the matching lifecycle action, with the same guards and history entry as POST /lifecycle. Send `X-If-Unchanged-Since: <updatedAt you loaded>` to have the save refused with 409 STALE_WRITE if someone changed the record since.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -24547,6 +24722,8 @@ paths:
         Only for a customer that never carried traffic or held financial records. Offboard a real customer with the close lifecycle action instead.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -24680,6 +24857,8 @@ paths:
         The one write path for a customer's state. Live calls keep talking unless `disconnectLiveCalls` is true. Send `X-If-Unchanged-Since: <updatedAt you loaded>` to have the save refused with 409 STALE_WRITE if someone changed the record since.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -24874,6 +25053,8 @@ paths:
         Generates a new password and returns it ONCE. The old password stops working immediately.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -25108,6 +25289,8 @@ paths:
         Writes an audit entry only. Call it when your interface copies a credential to the clipboard.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '202':
           $ref: '#/components/responses/ApprovalRequired'
@@ -25170,6 +25353,8 @@ paths:
         Generate one, or set one by hand with `mode: "manual"`. The new password is returned ONCE and the old one stops working immediately (no overlap window).
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -25456,7 +25641,10 @@ paths:
       tags:
         - 'Switch: customers'
       summary: Add a Switch customer contact
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -25574,7 +25762,10 @@ paths:
       tags:
         - 'Switch: customers'
       summary: Update a Switch customer contact
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -25694,7 +25885,10 @@ paths:
       tags:
         - 'Switch: customers'
       summary: Delete a Switch customer contact
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -25875,7 +26069,10 @@ paths:
       tags:
         - 'Switch: customers'
       summary: Add an internal note to a Switch customer
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -25965,6 +26162,8 @@ paths:
         The author and creation time never change.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -26053,7 +26252,10 @@ paths:
       tags:
         - 'Switch: customers'
       summary: Delete a Switch customer note
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -26524,6 +26726,8 @@ paths:
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
 
         **Idempotency:** send an `X-Idempotency-Key` header to make retries safe; a replay within 24 hours returns the original response.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -26622,6 +26826,8 @@ paths:
         A posted payment is never edited or deleted. This posts a linked reversal and unwinds its invoice allocations; both entries stay on the record.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -26739,6 +26945,8 @@ paths:
         The period runs from the last invoice's end (or the customer's creation) to now. Issues nothing; returns a `reviewToken` for generate-invoice.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -26828,6 +27036,8 @@ paths:
         Requires the `reviewToken` from invoice-preview; refused with 409 INVOICE_REVIEW_STALE if the data changed since, or INVOICE_UNRATED_USAGE if unrated usage remains and was not excluded.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -27049,6 +27259,8 @@ paths:
         The customer's legal and billing identity. Frozen onto invoices issued afterwards; never changes an invoice already issued. Send `X-If-Unchanged-Since: <updatedAt you loaded>` to have the save refused with 409 STALE_WRITE if someone changed the record since.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -27275,6 +27487,8 @@ paths:
         A provider is the carrier or company that owns one or more supplier trunks.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -27525,6 +27739,8 @@ paths:
         Partial update; status is changed through POST /{id}/status instead. Send `X-If-Unchanged-Since: <updatedAt you loaded>` to be refused with 409 STALE_WRITE if someone else saved in between.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -27730,6 +27946,8 @@ paths:
         Its trunks are NOT deleted: they are detached (ungrouped) with their routing intact.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -27802,6 +28020,8 @@ paths:
         Stops or resumes traffic on every trunk of the provider. The response says whether traffic changed and how many active trunks were affected.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -28075,6 +28295,8 @@ paths:
         One contact per role (NOC, rates, billing, finance, fraud, account, emergency).
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -28174,7 +28396,10 @@ paths:
       tags:
         - 'Switch: suppliers'
       summary: Update a provider contact
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -28276,7 +28501,10 @@ paths:
       tags:
         - 'Switch: suppliers'
       summary: Delete a provider contact
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -28399,6 +28627,8 @@ paths:
         A provider is the carrier or company that owns one or more supplier trunks. Deprecated alias of the same operation under /switch/providers.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       deprecated: true
       responses:
         '201':
@@ -28654,6 +28884,8 @@ paths:
         Partial update; status is changed through POST /{id}/status instead. Send `X-If-Unchanged-Since: <updatedAt you loaded>` to be refused with 409 STALE_WRITE if someone else saved in between. Deprecated alias of the same operation under /switch/providers.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       deprecated: true
       responses:
         '200':
@@ -28860,6 +29092,8 @@ paths:
         Its trunks are NOT deleted: they are detached (ungrouped) with their routing intact. Deprecated alias of the same operation under /switch/providers.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       deprecated: true
       responses:
         '200':
@@ -28933,6 +29167,8 @@ paths:
         Stops or resumes traffic on every trunk of the provider. The response says whether traffic changed and how many active trunks were affected. Deprecated alias of the same operation under /switch/providers.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       deprecated: true
       responses:
         '200':
@@ -29211,6 +29447,8 @@ paths:
         One contact per role (NOC, rates, billing, finance, fraud, account, emergency). Deprecated alias of the same operation under /switch/providers.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       deprecated: true
       responses:
         '201':
@@ -29315,6 +29553,8 @@ paths:
         Deprecated alias of the same operation under /switch/providers.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       deprecated: true
       responses:
         '200':
@@ -29421,6 +29661,8 @@ paths:
         Deprecated alias of the same operation under /switch/providers.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       deprecated: true
       responses:
         '200':
@@ -29580,6 +29822,8 @@ paths:
         Creates a draft deck (version 1, or the next version of an existing name for that provider). Load rows with PUT /rate-decks/{id}/rows.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -29739,6 +29983,8 @@ paths:
         Deletes the deck and its rows. An active deck must be rolled back first.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -30105,7 +30351,10 @@ paths:
       tags:
         - 'Switch: rating'
       summary: Set which supplier trunks a rate deck prices
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -30183,6 +30432,8 @@ paths:
         Up to 200,000 rows, replacing whatever the deck held. Rows are stored pending and price nothing until the deck is activated. Validation runs straight after, and the validated deck is returned. Rows can only be changed while the deck is draft, uploaded, invalid or validated (`mutable: true`); an active deck is changed by opening a new version.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -30316,6 +30567,8 @@ paths:
         Copies this deck's rows and trunks into version n+1 as a draft, so an active deck can be repriced without editing it in place.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -30378,6 +30631,8 @@ paths:
         Checks the rows (missing prices, duplicate prefixes, increases) and stores the result on the deck. A deck with errors becomes invalid and cannot be activated.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -30436,7 +30691,10 @@ paths:
       tags:
         - 'Switch: rating'
       summary: Submit a rate deck for approval
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -30499,6 +30757,8 @@ paths:
         With no effectiveFrom (or a past one) the deck is activated immediately. A future effectiveFrom schedules it and emits the cost_rate.scheduled webhook.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -30572,6 +30832,8 @@ paths:
         Makes the deck's rows price calls on its trunks from now on and supersedes the deck they replace. Exactly one deck is active per trunk.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -30634,6 +30896,8 @@ paths:
         Withdraws the deck and restores the one it superseded (named in restoredDeckId). Emits the cost_rate.rolled_back webhook.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -31308,7 +31572,10 @@ paths:
       tags:
         - 'Switch: suppliers'
       summary: Open a billing dispute with a provider
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -31418,7 +31685,10 @@ paths:
       tags:
         - 'Switch: suppliers'
       summary: Update a billing dispute
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -31590,7 +31860,10 @@ paths:
       tags:
         - 'Switch: suppliers'
       summary: Add a SIP endpoint to a supplier trunk
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -31704,7 +31977,10 @@ paths:
       tags:
         - 'Switch: suppliers'
       summary: Update a SIP endpoint
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -31824,6 +32100,8 @@ paths:
         The last endpoint of a trunk cannot be removed: add its replacement first.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -32247,6 +32525,8 @@ paths:
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
 
         **Rate limit:** 6 requests per minute per caller.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -32356,6 +32636,8 @@ paths:
         Pass `supplierId: null` to ungroup the trunk.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -32480,6 +32762,8 @@ paths:
         A trunk needs at least one reachable endpoint: a SIP host, an HTTPS SMS delivery URL, or an SMPP host.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -33425,6 +33709,8 @@ paths:
         Turns a route you bought on the marketplace into a trunk your switch can route to. Idempotent per route: promoting again returns the existing trunk. The seller address stays hidden.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -33884,6 +34170,8 @@ paths:
         Partial update. When trunk change approval is on, the change is queued for review instead and the response carries `pendingChange`. Send `X-If-Unchanged-Since: <updatedAt you loaded>` to be refused with 409 STALE_WRITE if someone else saved in between.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -34777,7 +35065,10 @@ paths:
       tags:
         - 'Switch: suppliers'
       summary: Delete a supplier trunk
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -34907,6 +35198,8 @@ paths:
         `applied` is the trunk after the change, redacted like every trunk read (`sipAuthPasswordSet` / `smppPasswordSet` instead of the secrets). `driftedSinceRequest` lists fields that changed on the trunk after the request was made.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -34985,7 +35278,10 @@ paths:
       tags:
         - 'Switch: customer trunks'
       summary: Reject a trunk configuration change
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -35058,7 +35354,10 @@ paths:
       tags:
         - 'Switch: customer trunks'
       summary: Withdraw your own pending trunk change
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -35172,7 +35471,10 @@ paths:
       tags:
         - 'Switch: customer trunks'
       summary: Turn supplier trunk change approval on or off
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -35346,6 +35648,8 @@ paths:
         When on, it can refuse only the first-ever activation of a new trunk; existing trunks are grandfathered and bundle trunks are exempt.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -35679,6 +35983,8 @@ paths:
         Authorises an address or CIDR for a customer (IP authentication) or a trunk (identity).
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -35758,6 +36064,8 @@ paths:
         Removing a customer address stops calls from that address immediately.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -36084,6 +36392,8 @@ paths:
         Creates a draft (version 1, or the next version of an existing name). Load prices, then publish.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -36419,6 +36729,8 @@ paths:
         Superseded and archived decks cannot change. Changing the charging profile of an ACTIVE deck reprices every trunk on it from the next call, and is logged as a warning.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -36627,6 +36939,8 @@ paths:
         Up to 200,000 rows, replacing whatever the draft held (last row wins per prefix and origin). Published decks are never overwritten; open a new version instead.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -36725,6 +37039,8 @@ paths:
         Copies the deck's charging profile and prices into version n+1 as a draft. Publishing it is what moves prices.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -36856,6 +37172,8 @@ paths:
         Without `confirm: true` this only reports whose prices would change and writes nothing. With it, the deck becomes active, the previous version is superseded, and its prices are written onto every trunk that resolves to it, from the next call onward.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -36964,6 +37282,8 @@ paths:
         The deck used by trunks set to "system default". Only an active deck qualifies; send `deckId: null` to clear it.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -37123,6 +37443,8 @@ paths:
         Without `confirm: true` nothing changes: the response lists the trunks whose prices would change. With it, the deck is assigned and trunks that follow the customer default reprice from the next call.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -37290,6 +37612,8 @@ paths:
         Without `confirm: true` nothing changes and the response shows what would be in force. With it, the trunk reprices from the next call.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -37579,6 +37903,8 @@ paths:
         Sends a magic sign-in link to the customer's portal email. With no portal email set it answers 400 VALIDATION_ERROR.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -37654,6 +37980,8 @@ paths:
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
 
         **Rate limit:** 20 requests per minute per caller.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -37721,6 +38049,8 @@ paths:
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
 
         **Rate limit:** 20 requests per minute per caller.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -37826,6 +38156,8 @@ paths:
         Sends a magic link to the trunk `portalEmail`. When no portal email is set it answers 400 VALIDATION_ERROR.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -38092,6 +38424,8 @@ paths:
         Upserts by prefix and origin. Emits the sell_rate.changed webhook.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -38169,6 +38503,8 @@ paths:
         Up to 50,000 rows in one transaction; the last row wins per prefix and origin. Emits one sell_rate.changed webhook.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -38254,7 +38590,10 @@ paths:
       tags:
         - 'Switch: rating'
       summary: Delete an operator sell rate
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -38322,6 +38661,8 @@ paths:
         Deletes the listed prefixes, or EVERY operator sell rate when `prefixes` is omitted.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -38507,6 +38848,8 @@ paths:
         Takes effect now on the customer's default trunk. Use the per-trunk rate endpoints to price a specific trunk.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -38836,6 +39179,8 @@ paths:
         With a notice period, a rise on any of this customer's prices (hand edit, bulk paste, sheet import, markup, sell-deck publish or assignment) is queued and takes effect that many days out, at the next 00:00 UTC; decreases and new destinations still apply at once. 0 = every change applies immediately. The new period applies to rises written from now on; changes already queued keep their dates. Needs the rates.publish permission; the change is audited. Send `X-If-Unchanged-Since: <updatedAt you loaded>` to have the save refused with 409 STALE_WRITE if someone changed the record since.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -39041,6 +39386,8 @@ paths:
         Emails the customer every queued change with its effective date: a table of the first 100 in the message and the full list (up to 5,000 rows) as CSV in the text part. The email is white-label: it is sent under your brand, replies go to your own support address, and it does not mention PacketExchange. Recipients are `to` when given (up to 10), otherwise the default recipients from GET .../sell-rates/notice. Answers 400 VALIDATION_ERROR when there are no queued changes, when `trunkId` is not one of this customer's trunks, or when there is no one to send to. A recipient the mail service refused is listed in `failed`, not raised as an error. Needs the rates.publish permission; the send is audited. Send `X-If-Unchanged-Since: <updatedAt you loaded>` to have the save refused with 409 STALE_WRITE if someone changed the record since.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -39161,6 +39508,8 @@ paths:
         Omit the effective fields to act now. Send either `effectiveFrom` (an instant with an offset) or `effectiveLocal` plus `timezone`; a bare date is refused because midnight differs by country.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -39309,6 +39658,8 @@ paths:
         Closes every rate's period at the effective moment; nothing is deleted and priced calls keep their rate. New calls fall back to your operator deck, then markup over cost. Omit the effective fields to act now. Send either `effectiveFrom` (an instant with an offset) or `effectiveLocal` plus `timezone`; a bare date is refused because midnight differs by country.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -39420,6 +39771,8 @@ paths:
         Omit the effective fields to act now. Send either `effectiveFrom` (an instant with an offset) or `effectiveLocal` plus `timezone`; a bare date is refused because midnight differs by country.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -39619,7 +39972,10 @@ paths:
       tags:
         - 'Switch: customers'
       summary: Reprice a Switch customer deck as a markup over buy cost
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -39814,7 +40170,10 @@ paths:
       tags:
         - 'Switch: customers'
       summary: Add or replace many Switch customer sell rates
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -39919,6 +40278,8 @@ paths:
         Kept for existing clients: the rate is discontinued immediately, not deleted.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -40128,7 +40489,10 @@ paths:
       tags:
         - 'Switch: customer trunks'
       summary: Add or replace one sell rate on a trunk
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -40486,6 +40850,8 @@ paths:
         Omit the effective fields to act now. Send either `effectiveFrom` (an instant with an offset) or `effectiveLocal` plus `timezone`; a bare date is refused because midnight differs by country.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -40634,6 +41000,8 @@ paths:
         Nothing is deleted; priced calls keep their rate. Omit the effective fields to act now. Send either `effectiveFrom` (an instant with an offset) or `effectiveLocal` plus `timezone`; a bare date is refused because midnight differs by country.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -40745,6 +41113,8 @@ paths:
         Omit the effective fields to act now. Send either `effectiveFrom` (an instant with an offset) or `effectiveLocal` plus `timezone`; a bare date is refused because midnight differs by country.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -40860,7 +41230,10 @@ paths:
       tags:
         - 'Switch: customer trunks'
       summary: Add or replace many sell rates on a trunk
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -40965,6 +41338,8 @@ paths:
         Kept for existing clients: the rate is discontinued immediately, not deleted.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -41058,7 +41433,10 @@ paths:
       tags:
         - 'Switch: customer trunks'
       summary: Discontinue every sell rate on a trunk now
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -41202,6 +41580,8 @@ paths:
         The rate becomes active at the effective moment. Omit the effective fields to act now. Send either `effectiveFrom` (an instant with an offset) or `effectiveLocal` plus `timezone`; a bare date is refused because midnight differs by country.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -41300,7 +41680,10 @@ paths:
       tags:
         - 'Switch: customer trunks'
       summary: Cancel a scheduled sell rate on a trunk
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -41377,6 +41760,8 @@ paths:
         Applies to the customer's deck; on a single-trunk customer that is this trunk's deck.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -41571,7 +41956,10 @@ paths:
       tags:
         - 'Switch: customers'
       summary: Discontinue every Switch customer sell rate now
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -41715,6 +42103,8 @@ paths:
         The rate becomes active at the effective moment. Omit the effective fields to act now. Send either `effectiveFrom` (an instant with an offset) or `effectiveLocal` plus `timezone`; a bare date is refused because midnight differs by country.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -41813,7 +42203,10 @@ paths:
       tags:
         - 'Switch: customers'
       summary: Cancel a scheduled Switch customer sell rate
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -41892,6 +42285,8 @@ paths:
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
 
         **Rate limit:** 10 requests per minute per caller.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -42050,6 +42445,8 @@ paths:
         Dry run: compares the sheet with the target deck's live rows and reports added, changed and removed prefixes. `changeMode` decides whether omitted prefixes stop pricing. Writes nothing.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -42156,6 +42553,8 @@ paths:
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
 
         **Rate limit:** 20 requests per minute per caller.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -42351,6 +42750,8 @@ paths:
         Creates or replaces the active rate for the prefix (and origin), effective now.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -42433,7 +42834,10 @@ paths:
       tags:
         - 'Switch: suppliers'
       summary: Set costs for many prefixes on a supplier trunk
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -42528,7 +42932,10 @@ paths:
       tags:
         - 'Switch: suppliers'
       summary: Delete one cost row from a supplier trunk
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -42603,6 +43010,8 @@ paths:
         The deck is archived, not destroyed: restore it with POST /{id}/rates/restore.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -42754,6 +43163,8 @@ paths:
         Restores the newest archive unless `revisionId` names one. Each row returns to the status it was archived from.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -42894,6 +43305,8 @@ paths:
         A date in the past or now applies the rate immediately instead.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -42980,7 +43393,10 @@ paths:
       tags:
         - 'Switch: suppliers'
       summary: Cancel a scheduled cost change
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -43278,6 +43694,8 @@ paths:
         Irreversible: allocates the next invoice number and claims the usage. Requires the `reviewToken` from a preview that still matches live data. Does not send the invoice; use POST /switch/invoices/{id}/send.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -43472,6 +43890,8 @@ paths:
         A read: allocates no number and claims no usage. Returns every figure the invoice would carry, the usage it could not price, and a review token. Issue with that token; if live data changes in between, issuing fails with INVOICE_REVIEW_STALE.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -43623,6 +44043,8 @@ paths:
         Updates `amountPaid` and the status (partial or paid). Overpayment is refused.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -43705,6 +44127,8 @@ paths:
         A correction, never an erasure: needs a reason, refuses an invoice that has payments against it (issue a credit note instead), and releases the usage it claimed so it can be billed again. Applied credit notes are returned to the customer.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -43871,6 +44295,8 @@ paths:
         Voids this invoice and issues a replacement over the same period in one step. Preview the replacement first (with `releaseInvoiceId`) and pass its review token. If the void succeeds but the issue fails, the original stays void and its usage is unbilled; the error says so.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -44062,6 +44488,8 @@ paths:
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
 
         **Rate limit:** 60 requests per 10 minutes per caller.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -44362,6 +44790,8 @@ paths:
         Open credit reduces net receivables and can be applied to a later invoice with `applyCredits`. `invoiceId`, when given, must belong to the same customer.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -44525,7 +44955,10 @@ paths:
       tags:
         - 'Switch: customers'
       summary: Set a Switch customer billing cycle and payment terms
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -44719,6 +45152,8 @@ paths:
         Totals the supplier cost of the usage on that trunk in the period and claims it, so it cannot be paid twice.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -44958,6 +45393,8 @@ paths:
         Payments larger than the outstanding balance, or against a void payable, are refused.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -45040,6 +45477,8 @@ paths:
         Releases the usage it claimed so a corrected payable can pick it up. Voiding an already void payable is a no-op.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -45311,7 +45750,10 @@ paths:
       tags:
         - 'Switch: invoicing'
       summary: Create a bilateral counterparty
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -45392,7 +45834,10 @@ paths:
       tags:
         - 'Switch: invoicing'
       summary: Update a bilateral counterparty
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -45478,7 +45923,10 @@ paths:
       tags:
         - 'Switch: invoicing'
       summary: Delete a bilateral counterparty
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -45546,6 +45994,8 @@ paths:
         Open receivables (less issued credit notes) minus open payables in the period give one net figure and direction. The run is recorded as final and fires the `netting.run` webhook; the money itself moves off-platform.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -46348,7 +46798,10 @@ paths:
       tags:
         - 'Switch: operations'
       summary: Update fraud screening settings
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -46807,7 +47260,10 @@ paths:
       tags:
         - 'Switch: operations'
       summary: Acknowledge an operational issue
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -46890,6 +47346,8 @@ paths:
         Pass `userId: null` to unassign.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -46969,7 +47427,10 @@ paths:
       tags:
         - 'Switch: operations'
       summary: Resolve an operational issue
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -47052,6 +47513,8 @@ paths:
         Closes it as dismissed. It reopens automatically if the condition in `reopensWhen` occurs.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -47143,7 +47606,10 @@ paths:
       tags:
         - 'Switch: operations'
       summary: Reopen a resolved or dismissed operational issue
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -47226,6 +47692,8 @@ paths:
         Mutes notifications only; the issue stays open and visible. Up to 14 days.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -47316,6 +47784,8 @@ paths:
         Queues an export of the filtered records (body takes the same filters as GET /switch/cdrs). At most 3 exports may run at once. Numbers: a scoped API key without the `cdr:numbers` scope receives masked calling and dialled numbers (`numbersMasked` says so). Full-access keys and dashboard sessions see them in full.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '202':
           description: Success.
@@ -47751,6 +48221,8 @@ paths:
         Writes an access entry to your account activity (for example when diagnostics are copied to the clipboard). Answers 202 with `{ success: true }` and no data.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '202':
           description: 'Recorded. The body is `{ "success": true }` with no `data`.'
@@ -48016,6 +48488,8 @@ paths:
         Column order, visible columns, density, page size (50, 100 or 200) and column widths (48-600 px). Invalid values are dropped, not rejected.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -48193,6 +48667,8 @@ paths:
         A display preference only; nothing on the switch changes.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -48367,7 +48843,10 @@ paths:
       tags:
         - 'Switch: operations'
       summary: Retrain the traffic baseline from recent calls
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -48431,6 +48910,8 @@ paths:
         Dry run of the risk assessment for a customer calling a destination. An unknown customer answers 404 NOT_FOUND.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -50584,6 +51065,8 @@ paths:
         Creates the view, or replaces the one with the same name.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -50682,6 +51165,8 @@ paths:
         Answers `{ success: true }` with no data, whether or not the view existed.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: 'Deleted. The body is `{ "success": true }` with no `data`.'
@@ -50807,6 +51292,8 @@ paths:
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
 
         **Rate limit:** 10 requests per minute per caller.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -51270,6 +51757,8 @@ paths:
         Natural-language questions and requests about your traffic, answered from your own switch data within your team permissions. Returns a reply and any actions it proposes or took. Nothing changes unless your role allows it.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -51506,6 +51995,8 @@ paths:
         Gives an email address a role on your switch, optionally limited to some customers and trunks (null = all).
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '201':
           description: Success.
@@ -51595,7 +52086,10 @@ paths:
       tags:
         - 'Switch: team and audit'
       summary: Change a team member's role, scope or status
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -51694,6 +52188,8 @@ paths:
         Suspends rather than deletes, so their history stays attributed.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -52017,7 +52513,10 @@ paths:
       tags:
         - 'Switch: team and audit'
       summary: Approve or reject an approval request
-      description: '**Auth:** API key or JWT. Scoped keys need `switch:manage`.'
+      description: |-
+        **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -52158,6 +52657,8 @@ paths:
         Require a second person to approve actions under this permission, optionally only above an amount.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -52838,6 +53339,8 @@ paths:
         Name exactly one of `subAccountId` or `customerTrunkId`. A trunk can pass `honor: null` to inherit from its customer; a customer is either on or off. Takes effect on the next call and is audited with the before and after values.
 
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -52910,6 +53413,8 @@ paths:
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
 
         **Rate limit:** 10 requests per minute per caller.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -53080,6 +53585,8 @@ paths:
         **Auth:** API key or JWT. Scoped keys need `switch:manage`.
 
         **Rate limit:** 10 requests per minute per caller.
+
+        **Test keys:** refused with 403 `TEST_KEY_NOT_ALLOWED`. The Switch has no test mode, so a change always applies to your live configuration. Test keys can still read Switch data.
       responses:
         '200':
           description: Success.
@@ -54421,7 +54928,7 @@ paths:
         - Voice and SMS
       summary: Place a single outbound call
       description: |-
-        Dials `to` over a route you purchased (or one Smart Routing selects) and BLOCKS until the call ends - answer and hangup, no answer, or `maxDuration` - then returns the outcome and what it cost. Set a client timeout above `maxDuration`. Billed per the route increment at the route price plus the platform fee, after the call completes. A test key simulates the call against test credit.
+        Dials `to` over a route you purchased (or one Smart Routing selects). By default the request BLOCKS until the call ends - answer and hangup, no answer, or `maxDuration` - then returns the outcome and what it cost (200); set a client timeout above `maxDuration`. With `async: true` it returns at once with **202** and `status: ringing`; follow the call on GET /comms/calls/{id} or with the call.ringing, call.answered, call.gathered and call.completed webhooks. Validation, routing and balance errors are still returned straight away in both modes. `actions` make the answered call speak (`say`, in en, es, fr, de, pt or hi), play an MP3 (`play`), collect keypad digits (`gather`), wait (`pause`) or end (`hangup`), in order; audio is prepared before dialling, so a bad URL costs nothing. Billed per the route increment at the route price plus the platform fee, after the call completes; there is no charge for spoken text. A test key simulates the call against test credit and runs no actions.
 
         **Auth:** API key or JWT. Scoped keys need `voice:send`.
 
@@ -54430,7 +54937,7 @@ paths:
         **Idempotency:** send an `X-Idempotency-Key` header to make retries safe; a replay within 24 hours returns the original response.
       responses:
         '200':
-          description: Success.
+          description: The call outcome (200), or with async:true the accepted call (202)
           content:
             application/json:
               schema:
@@ -54444,7 +54951,9 @@ paths:
                     enum:
                       - true
                   data:
-                    $ref: '#/components/schemas/CommsCall'
+                    anyOf:
+                      - $ref: '#/components/schemas/CommsCall'
+                      - $ref: '#/components/schemas/CommsCallAccepted'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -54506,6 +55015,26 @@ paths:
                   maximum: 3600
                   default: 300
                   description: Hang up after this many seconds
+                async:
+                  type: boolean
+                  description: Return at once (202, status ringing) instead of waiting for the call to end. Follow the call on GET /comms/calls/{id} or with the call.* webhooks
+                actions:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/CallAction'
+                  minItems: 1
+                  maxItems: 10
+                  description: 'What the call does once answered, in order: say, play, gather, pause, hangup. At most 10 actions, 1,500 characters of spoken text, 3 play URLs and 5 gathers. The call ends when the actions finish'
+                language:
+                  type: string
+                  enum:
+                    - en
+                    - es
+                    - fr
+                    - de
+                    - pt
+                    - hi
+                  description: Default language for say actions (default en)
               required:
                 - to
                 - from
@@ -54601,6 +55130,60 @@ paths:
             minimum: 1
             maximum: 100
             default: 25
+  /api/v1/comms/calls/{id}:
+    get:
+      operationId: getCommsCallsById
+      tags:
+        - Voice and SMS
+      summary: 'Get one call: live status, cost and gathered digits'
+      description: |-
+        Works for any call placed through POST /comms/calls, while it runs and after it ends: status, timestamps, duration, cost, the hangup cause in plain words, and the digits collected by gather actions. A reseller sub-account key sees only its own calls. Unknown ids answer 404.
+
+        **Auth:** API key or JWT. Scoped keys need `voice:send`.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    $ref: '#/components/schemas/CommsCallStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+      x-auth: key
+      x-required-scope: voice:send
+      x-error-codes:
+        - NOT_FOUND
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            description: The callId returned by POST /comms/calls
   /api/v1/comms/sms:
     post:
       operationId: postCommsSms
@@ -54608,7 +55191,7 @@ paths:
         - Voice and SMS
       summary: Send a single SMS
       description: |-
-        Forwards the message to the route seller and returns straight away with a message id. `status` is the send-time outcome (accepted, sent or failed); there are no handset delivery receipts. Billed per segment at the route price plus the platform fee. A test key simulates the send against test credit.
+        Forwards the message to the route seller and returns straight away with a message id. `status` is the send-time outcome (accepted, sent or failed). The final outcome comes later from the carrier's delivery receipt, when the route returns one: read it with `GET /comms/sms/{messageId}` or subscribe to the `sms.delivered` and `sms.failed` webhooks. A message that fails on its receipt is refunded. Billed per segment at the route price plus the platform fee. A test key simulates the send against test credit.
 
         **Auth:** API key or JWT. Scoped keys need `sms:send`.
 
@@ -54795,11 +55378,15 @@ paths:
       operationId: getCommsSmsByMessageId
       tags:
         - Voice and SMS
-      summary: Get the status of a sent SMS
+      summary: Get the delivery status and timeline of a sent SMS
       description: |-
-        Returns the last known send-time state. An unknown id answers 200 with status `not_found` rather than 404.
+        Returns the message's current status and its timeline: `queued` (charged), `sent` (the route accepted the hand-off), then `delivered` or `failed`, each with a timestamp, and an `errorCode` on failure.
 
-        **Auth:** API key or JWT. Not available to scoped keys - use a full-access key or a dashboard session.
+        **Where delivered comes from.** Only from a carrier delivery receipt. Receipts come back on SMPP routes whose supplier returns them, and on HTTP routes whose seller posts them back to us. A route that returns none leaves its messages at `sent` with `awaitingReceipt: true`; `routeReturnsReceipts` tells you whether the route has returned any in the last 30 days, so you know whether to wait. A receipt that reports the message undelivered, expired or rejected marks it `failed` and refunds it.
+
+        Covers messages sent with `POST /comms/sms` and `POST /comms/sms/bulk`. An unknown id answers 200 with status `not_found` rather than 404.
+
+        **Auth:** API key or JWT. Scoped keys need `sms:send`.
       responses:
         '200':
           description: Success.
@@ -54830,6 +55417,7 @@ paths:
         '500':
           $ref: '#/components/responses/ServerError'
       x-auth: key
+      x-required-scope: sms:send
       security:
         - bearerAuth: []
         - apiKeyAuth: []
@@ -59211,6 +59799,118 @@ paths:
         - {}
         - bearerAuth: []
         - apiKeyAuth: []
+  /api/v1/pricing/destinations:
+    get:
+      operationId: getPricingDestinations
+      tags:
+        - Markets
+      summary: List destinations with live routes and their lowest rates
+      description: |-
+        Public. Every destination with at least one live, buyer-visible route, per product: slug, route count and lowest rate. Pass `type` for one product; without it both `voice` and `sms` lists are returned. Rebuilt at most every 10 minutes (`Cache-Control: public, max-age=600`). Rates are the sellers' list prices before the platform fee.
+
+        **Auth:** none - public endpoint.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    type: object
+                    properties:
+                      voice:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PricingDestination'
+                      sms:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PricingDestination'
+                      updatedAt:
+                        type: string
+                        format: date-time
+                        description: ISO-8601 timestamp (UTC)
+                    required:
+                      - updatedAt
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+      x-auth: public
+      security: []
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - voice
+              - sms
+  /api/v1/pricing/destinations/{slug}:
+    get:
+      operationId: getPricingDestinationsBySlug
+      tags:
+        - Markets
+      summary: Get the live market for one destination
+      description: |-
+        Public. Lowest rate per number type, mobile operator breakouts, caller-ID and billing-increment mix, and the five cheapest routes as anonymous facts (price, caller ID, increment, stated ASR). ASR and ACD are stated by the seller, not measured. 404 when the destination has no live route of that type. Cached like the list.
+
+        **Auth:** none - public endpoint.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    $ref: '#/components/schemas/PricingDestinationDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+      x-auth: public
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^[a-z0-9-]{1,80}$
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - voice
+              - sms
+            default: voice
   /api/v1/cli-tests:
     get:
       operationId: getCliTests
@@ -59399,7 +60099,9 @@ paths:
         - CLI tests
       summary: Run a caller-ID test on a route
       description: |-
-        Places a real call to a test handset in the destination country and reports what caller ID it displayed. Give exactly one of `routeId` or `blendRouteId`; a blend runs one test per member route. Billed per test call.
+        Places a real call to a test handset in the destination country and reports what caller ID it displayed. Give exactly one of `routeId` or `blendRouteId`; a blend runs one test per member route.
+
+        **Billing:** $0.50 per test, charged only if the call rang the handset (once per test). A call that never rings costs nothing. `GET /cli-tests/quota` returns the current price as `costPerTest`.
 
         **Auth:** API key or JWT. Scoped keys need `dialer:write`.
       responses:
@@ -59945,7 +60647,7 @@ paths:
         - CLI tests
       summary: Test a caller ID on your own switch
       description: |-
-        For a switch not hosted here: give its SIP address and the caller ID to present. A private test-only route is set up for you, and the test is billed and reported like any other.
+        For a switch not hosted here: give its SIP address and the caller ID to present. A private test-only route is set up for you, and the test is reported like any other: $0.50, charged only if the call rang the handset.
 
         **Auth:** API key or JWT. Scoped keys need `dialer:write`.
       responses:
@@ -65053,6 +65755,123 @@ paths:
             type: integer
             minimum: 1
             maximum: 500
+  /api/v1/dids/{id}/ai-agent:
+    get:
+      operationId: getDidsByIdAiAgent
+      tags:
+        - Phone numbers
+      summary: See which AI voice agent answers a number
+      description: |-
+        Returns the agent pointed at this number (or null), whether inbound AI answering is switched on for the platform, and the per-minute AI voice rate.
+
+        **Auth:** API key or JWT. Scoped keys need `numbers:read`.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    $ref: '#/components/schemas/DidAiAgent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+      x-auth: key
+      x-required-scope: numbers:read
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+    put:
+      operationId: putDidsByIdAiAgent
+      tags:
+        - Phone numbers
+      summary: Point a number at an AI voice agent
+      description: |-
+        Send `{ "agentId": "<your agent id>" }` and inbound calls to the number are answered by that agent instead of ringing the number's call flow; send `{ "agentId": null }` to go back to the call flow, which is kept untouched meanwhile. Billed per second at the AI voice per-minute rate to the number's owner, on top of the number's monthly price. Each call is capped at the agent's maximum call length and at what your balance covers; when the agent is disabled or your balance covers less than 30 seconds, the number rings its call flow as usual. The agent must belong to your account.
+
+        **Auth:** API key or JWT. Scoped keys need `numbers:write`.
+      responses:
+        '200':
+          description: Success.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - data
+                properties:
+                  success:
+                    type: boolean
+                    enum:
+                      - true
+                  data:
+                    $ref: '#/components/schemas/DidAiAgent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+      x-auth: key
+      x-required-scope: numbers:write
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId:
+                  type: string
+                  format: uuid
+                  nullable: true
+                  description: One of your AI agents (GET /ai-agents), or null to clear
+              required:
+                - agentId
   /api/v1/dids/{id}/features:
     get:
       operationId: getDidsByIdFeatures
@@ -66548,7 +67367,7 @@ paths:
                       error:
                         type: string
                         nullable: true
-                      didwwMessageId:
+                      providerMessageId:
                         type: string
                         nullable: true
                         description: Upstream carrier message id
@@ -66575,7 +67394,7 @@ paths:
                       - segments
                       - status
                       - error
-                      - didwwMessageId
+                      - providerMessageId
                       - readAt
                       - createdAt
                       - cost
@@ -66715,22 +67534,80 @@ paths:
         **Auth:** API key or JWT. Scoped keys need `numbers:read`.
       responses:
         '200':
-          description: 'Matching groups. Note: `hits`, `scannedPages` and `truncated` sit at the TOP level beside `success`, not under `data`.'
+          description: Matching groups under `data`, like every other endpoint. The same `hits`, `scannedPages` and `truncated` are also repeated at the top level beside `success` for clients written before `data` was added; that copy is deprecated, read `data`.
           content:
             application/json:
               schema:
                 type: object
                 required:
                   - success
-                  - success
-                  - hits
-                  - scannedPages
-                  - truncated
+                  - data
                 properties:
                   success:
                     type: boolean
                     enum:
                       - true
+                  data:
+                    type: object
+                    properties:
+                      hits:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            groupId:
+                              type: string
+                              description: Pass to POST /dids/buy with a skuId
+                            country:
+                              type: string
+                            countryId:
+                              type: string
+                              description: Catalogue country id (filter value), not an ISO code
+                            countryPrefix:
+                              type: string
+                            city:
+                              type: string
+                              nullable: true
+                            areaPrefix:
+                              type: string
+                              nullable: true
+                            typeId:
+                              type: string
+                              nullable: true
+                            typeName:
+                              type: string
+                              nullable: true
+                              description: Local, National, Mobile, Toll-free...
+                            skus:
+                              type: array
+                              items:
+                                $ref: '#/components/schemas/DidCatalogSku'
+                            dialingPrefix:
+                              type: string
+                              description: Country prefix plus area prefix
+                            vanity:
+                              type: boolean
+                          required:
+                            - groupId
+                            - country
+                            - countryId
+                            - countryPrefix
+                            - city
+                            - areaPrefix
+                            - typeId
+                            - typeName
+                            - skus
+                            - dialingPrefix
+                            - vanity
+                      scannedPages:
+                        type: integer
+                      truncated:
+                        type: boolean
+                        description: True when the scan budget ran out before the end of the catalogue
+                    required:
+                      - hits
+                      - scannedPages
+                      - truncated
                   hits:
                     type: array
                     items:
@@ -69970,6 +70847,7 @@ components:
               - application:write
               - switch:manage
               - verify:write
+              - webhooks:write
           nullable: true
           description: null = full access; otherwise the only scopes this key may use
         environment:
@@ -70038,6 +70916,7 @@ components:
               - application:write
               - switch:manage
               - verify:write
+              - webhooks:write
           nullable: true
         environment:
           type: string
@@ -70076,8 +70955,13 @@ components:
             type: string
             enum:
               - call.completed
+              - call.ringing
+              - call.answered
+              - call.gathered
               - sms.sent
               - sms.dlr
+              - sms.delivered
+              - sms.failed
               - campaign.started
               - campaign.completed
               - topup.confirmed
@@ -70153,8 +71037,13 @@ components:
             type: string
             enum:
               - call.completed
+              - call.ringing
+              - call.answered
+              - call.gathered
               - sms.sent
               - sms.dlr
+              - sms.delivered
+              - sms.failed
               - campaign.started
               - campaign.completed
               - topup.confirmed
@@ -70943,6 +71832,43 @@ components:
         isOwn:
           type: boolean
           description: True only on your own listing (signed-in callers), so you are not offered your own route
+        network:
+          type: object
+          properties:
+            mccMnc:
+              type: string
+              nullable: true
+              description: Mobile network code (MCC-MNC) `rate` is for, e.g. "234-10"; null when unknown
+            operator:
+              type: string
+              nullable: true
+              description: Network name from public number-range data, e.g. "O2"
+            source:
+              type: string
+              enum:
+                - range
+                - hlr
+                - none
+              description: range = number-range data; none = not determined
+            rateBasis:
+              type: string
+              enum:
+                - network
+                - all_operators
+                - country
+              description: network = that network's own rate; all_operators = the route's rate for networks it does not list separately; country = the price for other or unknown networks
+          required:
+            - mccMnc
+            - operator
+            - source
+            - rateBasis
+          nullable: true
+          description: 'SMS routes that price the country per mobile network: which network `rate` is for. Absent otherwise'
+        countryRate:
+          allOf:
+            - $ref: '#/components/schemas/Money'
+          nullable: true
+          description: 'SMS routes that price per network: the price for other or unknown networks'
       required:
         - id
         - type
@@ -70993,6 +71919,32 @@ components:
           nullable: true
         status:
           type: string
+        mccMnc:
+          type: string
+          nullable: true
+          description: 'SMS sheets priced by network code: the network the row price came from ("214" = whole country)'
+        operatorRates:
+          type: array
+          items:
+            type: object
+            properties:
+              mccMnc:
+                type: string
+                description: '"214-07" for one network; "214" for All Operators'
+              operator:
+                type: string
+                nullable: true
+              rate:
+                $ref: '#/components/schemas/Money'
+            required:
+              - mccMnc
+              - operator
+              - rate
+          nullable: true
+          description: 'SMS sheets priced by network: the price per destination network (charged per network when `networkPriced` is true). A message is charged its network''s rate (networks not listed pay the All Operators rate when there is one); `ratePerUnit` is the price for other or unknown networks. The network is determined from the number''s range (ported numbers may be priced at the network the range belongs to)'
+        networkPriced:
+          type: boolean
+          description: True when each SMS on this row is charged its destination network's rate from `operatorRates`; `ratePerUnit` then applies to other or unknown networks
       required:
         - id
         - routeId
@@ -72210,6 +73162,272 @@ components:
         - yourTurn
         - counterparty
         - route
+    CallAction:
+      anyOf:
+        - type: object
+          properties:
+            say:
+              type: string
+              minLength: 1
+              maxLength: 500
+              description: Text spoken by our text-to-speech voice
+            language:
+              type: string
+              enum:
+                - en
+                - es
+                - fr
+                - de
+                - pt
+                - hi
+              description: Overrides the call default for this action
+          required:
+            - say
+          description: say
+        - type: object
+          properties:
+            play:
+              type: string
+              format: uri
+              maxLength: 2048
+              description: HTTPS URL of an MP3 file, at most 2 MB. We download it once before dialling (public addresses only, no redirects) and play our copy
+          required:
+            - play
+          description: play
+        - type: object
+          properties:
+            gather:
+              type: object
+              properties:
+                digits:
+                  type: integer
+                  minimum: 1
+                  maximum: 20
+                  default: 1
+                  description: Most keys to collect
+                timeout:
+                  type: integer
+                  minimum: 1
+                  maximum: 30
+                  default: 5
+                  description: Seconds to wait for the first key
+                finishOnKey:
+                  type: string
+                  enum:
+                    - '#'
+                    - '*'
+                    - ''
+                  default: '#'
+                  description: Key that ends input early; empty for none
+                tries:
+                  type: integer
+                  minimum: 1
+                  maximum: 3
+                  default: 1
+                  description: Prompt and wait again this many times in total when nothing is pressed
+                say:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+                  description: Prompt spoken while listening; a key press interrupts it
+                play:
+                  type: string
+                  format: uri
+                  maxLength: 2048
+                  description: Prompt played while listening (instead of say)
+                language:
+                  type: string
+                  enum:
+                    - en
+                    - es
+                    - fr
+                    - de
+                    - pt
+                    - hi
+          required:
+            - gather
+          description: gather
+        - type: object
+          properties:
+            pause:
+              type: integer
+              minimum: 1
+              maximum: 10
+              description: Seconds of silence
+          required:
+            - pause
+          description: pause
+        - type: object
+          properties:
+            hangup:
+              type: boolean
+              enum:
+                - true
+          required:
+            - hangup
+          description: hangup (must be last)
+    CommsCallAccepted:
+      type: object
+      properties:
+        callId:
+          type: string
+          format: uuid
+          description: Use with GET /comms/calls/{id}; the same id appears on the call.* webhooks
+        status:
+          type: string
+          enum:
+            - ringing
+          description: The call has been handed to the network and is being dialled
+        mode:
+          type: string
+          enum:
+            - async
+        to:
+          type: string
+        from:
+          type: string
+        actions:
+          type: integer
+          description: How many call actions will run on answer
+        statusUrl:
+          type: string
+          description: Path of GET /comms/calls/{id} for this call
+      required:
+        - callId
+        - status
+        - mode
+        - to
+        - from
+        - actions
+        - statusUrl
+    CommsCallStatus:
+      type: object
+      properties:
+        callId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - queued
+            - ringing
+            - answered
+            - completed
+            - no_answer
+            - busy
+            - failed
+          description: queued, ringing and answered are live states; completed (answered, then ended), no_answer, busy and failed are final
+        mode:
+          type: string
+          enum:
+            - sync
+            - async
+        to:
+          type: string
+        from:
+          type: string
+        simulated:
+          type: boolean
+          description: 'True for test-key calls: nothing was dialled'
+        createdAt:
+          type: string
+          format: date-time
+          description: ISO-8601 timestamp (UTC)
+        ringingAt:
+          type: string
+          format: date-time
+          description: ISO-8601 timestamp (UTC)
+          nullable: true
+        answeredAt:
+          type: string
+          format: date-time
+          description: ISO-8601 timestamp (UTC)
+          nullable: true
+        endedAt:
+          type: string
+          format: date-time
+          description: ISO-8601 timestamp (UTC)
+          nullable: true
+        durationSeconds:
+          type: integer
+          nullable: true
+        billableSeconds:
+          type: integer
+          nullable: true
+          description: Duration rounded up to the route billing increment
+        cost:
+          allOf:
+            - $ref: '#/components/schemas/Money'
+          nullable: true
+          description: What the call cost you, platform fee included. Null until it ends
+        billingIncrement:
+          type: string
+          nullable: true
+        sipResponseCode:
+          type: integer
+          nullable: true
+        hangupCause:
+          type: string
+          nullable: true
+          description: The switch cause code, e.g. NORMAL_CLEARING or USER_BUSY
+        hangupReason:
+          type: string
+          nullable: true
+          description: Why the call ended, in plain words. Null while it is live
+        error:
+          type: string
+          nullable: true
+          description: Why the call could not be placed, when it failed before reaching the network
+        actions:
+          type: array
+          items: {}
+          nullable: true
+          description: The call actions as you sent them
+        gathered:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+                description: Which gather action (0 for the first)
+              digits:
+                type: string
+                nullable: true
+                description: The keys pressed, without the finish key
+              status:
+                type: string
+                enum:
+                  - received
+                  - no_input
+                description: 'no_input: nothing was pressed, or the call ended before this step'
+            required:
+              - index
+              - digits
+              - status
+          nullable: true
+          description: Keypad input from gather actions, filled in when the call ends
+      required:
+        - callId
+        - status
+        - mode
+        - to
+        - from
+        - simulated
+        - createdAt
+        - ringingAt
+        - answeredAt
+        - endedAt
+        - durationSeconds
+        - billableSeconds
+        - cost
+        - billingIncrement
+        - sipResponseCode
+        - hangupCause
+        - hangupReason
+        - error
+        - actions
+        - gathered
     CommsCall:
       type: object
       properties:
@@ -72328,6 +73546,38 @@ components:
         simulated:
           type: boolean
           description: 'Present and true for test-key messages: nothing was sent'
+        network:
+          type: object
+          properties:
+            mccMnc:
+              type: string
+              nullable: true
+              description: Mobile network code (MCC-MNC) the message was priced as, e.g. "234-10"
+            operator:
+              type: string
+              nullable: true
+              description: Network name from public number-range data
+            source:
+              type: string
+              enum:
+                - range
+                - hlr
+                - none
+              description: range = number-range data; hlr = a live network lookup; none = not determined
+            rateBasis:
+              type: string
+              enum:
+                - network
+                - all_operators
+                - country
+              description: network = that network's own rate; all_operators = the route's rate for networks it does not list separately; country = the route's price for other or unknown networks
+          required:
+            - mccMnc
+            - operator
+            - source
+            - rateBasis
+          nullable: true
+          description: Present when the route prices SMS to this country per destination network. The network is determined from the number's range (ported numbers may be priced at the network the range belongs to)
       required:
         - messageId
         - to
@@ -72385,6 +73635,46 @@ components:
         - relatedEntityId
         - callId
         - createdAt
+    SmsTimelineStep:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - queued
+            - sent
+            - accepted
+            - delivered
+            - failed
+          description: queued = charged and waiting to be handed off; sent = the route accepted it; accepted = simulated on a test key; delivered / failed = final
+        at:
+          type: string
+          format: date-time
+          description: ISO-8601 timestamp (UTC)
+        source:
+          type: string
+          enum:
+            - platform
+            - submit
+            - carrier_receipt
+            - simulated
+          description: 'Where we learned it: our ledger, the hand-off to the route, the carrier''s delivery receipt, or a test-key simulation'
+        errorCode:
+          type: string
+          nullable: true
+          description: 'On failed: SELLER_REJECTED, NO_ENDPOINT, UNDELIVERABLE, EXPIRED or REJECTED'
+        carrierStatus:
+          type: string
+          nullable: true
+          description: The carrier receipt's own status value, e.g. DELIVRD or UNDELIV
+        carrierError:
+          type: string
+          nullable: true
+          description: The carrier receipt's own error value, when it sent one
+      required:
+        - status
+        - at
+        - source
     CommsSmsStatus:
       type: object
       properties:
@@ -72392,20 +73682,48 @@ components:
           type: string
         status:
           type: string
-          description: Last known send-time state (accepted, sent or failed), or not_found when the id is not on your account
+          description: 'Current state: sent, accepted (test key), delivered or failed; not_found when the id is not on your account. delivered only ever comes from a carrier receipt'
+        to:
+          type: string
+          nullable: true
+        from:
+          type: string
+          nullable: true
+        segments:
+          type: integer
+          nullable: true
+        errorCode:
+          type: string
+          nullable: true
+          description: 'Set when status is failed: SELLER_REJECTED (the route refused the hand-off), NO_ENDPOINT, UNDELIVERABLE, EXPIRED or REJECTED (from the carrier receipt)'
+        timeline:
+          type: array
+          items:
+            $ref: '#/components/schemas/SmsTimelineStep'
+          description: Every state the message has been in, oldest first
+        awaitingReceipt:
+          type: boolean
+          description: True while the message is sent and no carrier receipt has arrived. It stays true for good on a route that returns no receipts
+        routeReturnsReceipts:
+          type: boolean
+          nullable: true
+          description: Whether the route that carried this message has returned at least one carrier receipt in the last 30 days. null for test-key messages
         dlrSupported:
           type: boolean
-          description: 'Always false today: no handset delivery receipts are collected'
+          description: 'True: the platform collects carrier delivery receipts. Whether one arrives for this message depends on the route (routeReturnsReceipts)'
+        simulated:
+          type: boolean
+          description: 'Present and true for test-key messages: nothing was sent'
         cost:
           $ref: '#/components/schemas/Money'
-          description: US dollars as a decimal string with exactly 6 decimal places, e.g. "0.012500". Do money arithmetic with a decimal type, not floating point.
+          description: The ledger amount of the charge (negative)
         reference:
           type: string
           nullable: true
         sentAt:
           type: string
           format: date-time
-          description: ISO-8601 timestamp (UTC)
+          description: When the message was charged
         message:
           type: string
           description: Explanation, present when status is not_found
@@ -72879,6 +74197,11 @@ components:
           format: date-time
           description: ISO-8601 timestamp (UTC)
           nullable: true
+        aiAgentId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The AI voice agent answering inbound calls to this number, or null (PUT /dids/{id}/ai-agent)
         graceDays:
           type: integer
           description: Days an unpaid (suspended) number is held before release
@@ -72906,6 +74229,7 @@ components:
         - endpointReachable
         - endpointCause
         - endpointCheckedAt
+        - aiAgentId
         - graceDays
     DidBulkBuyResult:
       type: object
@@ -73528,7 +74852,7 @@ components:
         error:
           type: string
           nullable: true
-        didwwMessageId:
+        providerMessageId:
           type: string
           nullable: true
           description: Upstream carrier message id
@@ -73551,7 +74875,7 @@ components:
         - segments
         - status
         - error
-        - didwwMessageId
+        - providerMessageId
         - readAt
         - createdAt
     DidSmsSettings:
@@ -73880,6 +75204,323 @@ components:
         - didType
         - channels
         - label
+    DidAiAgent:
+      type: object
+      properties:
+        didId:
+          type: string
+          format: uuid
+        agentId:
+          type: string
+          format: uuid
+          nullable: true
+        agentName:
+          type: string
+          nullable: true
+        agentEnabled:
+          type: boolean
+          nullable: true
+          description: A disabled agent does not answer; the number rings its call flow
+        live:
+          type: boolean
+          description: Whether inbound AI answering is switched on for the platform right now
+        ratePerMin:
+          type: string
+          description: AI voice rate in USD per minute, billed per second
+      required:
+        - didId
+        - agentId
+        - agentName
+        - agentEnabled
+        - live
+        - ratePerMin
+    NumberLookup:
+      type: object
+      properties:
+        input:
+          type: string
+          description: What you sent
+        valid:
+          type: boolean
+          description: Whether the input is a well-formed E.164 number
+        reason:
+          type: string
+          nullable: true
+          description: Why it is not valid, when it is not
+        e164:
+          type: string
+          nullable: true
+          description: + followed by digits, e.g. +447700900123
+        internationalFormat:
+          type: string
+          nullable: true
+          description: +<country code> <rest>, e.g. +44 7700900123
+        country:
+          type: object
+          properties:
+            iso:
+              type: string
+              nullable: true
+              description: ISO 3166 alpha-2. null for a shared dial code the decks do not resolve (+1, +7)
+            name:
+              type: string
+            dialCode:
+              type: string
+            basis:
+              type: string
+              enum:
+                - rate_decks
+                - dial_code
+              description: rate_decks when the matching destinations name the country; dial_code otherwise
+          required:
+            - iso
+            - name
+            - dialCode
+            - basis
+          nullable: true
+        numberType:
+          type: string
+          enum:
+            - mobile
+            - fixed
+            - toll_free
+            - premium
+            - unknown
+          description: Inferred from the destination names on the rate decks that match the number (prefix-based, not an HLR query)
+        numberTypeConfidence:
+          type: number
+          description: '0 to 1: the share of matching decks that agree on numberType'
+        operator:
+          type: string
+          nullable: true
+          description: 'The network, only when at least three different sellers'' decks name the same one for this prefix. Prefix-based: a ported number keeps its original network here'
+        network:
+          type: object
+          properties:
+            mccMnc:
+              type: string
+              nullable: true
+              description: Mobile network code (MCC-MNC), when known, e.g. "234-58"
+            operator:
+              type: string
+              nullable: true
+              description: The network the number range was allocated to, e.g. "Manx Telecom"
+            source:
+              type: string
+              enum:
+                - range
+                - hlr
+              description: range = public number-range data
+          required:
+            - mccMnc
+            - operator
+            - source
+          nullable: true
+          description: The mobile network the number's RANGE belongs to, from public number-range data. A ported number keeps its range's network here. null when the range is not known
+        matchedPrefix:
+          type: string
+          nullable: true
+          description: The longest dial prefix any live deck matched
+        risk:
+          type: object
+          properties:
+            blocked:
+              type: boolean
+              description: A destination we do not carry (embargoed or platform-blocked)
+            sanctioned:
+              type: boolean
+            highRisk:
+              type: boolean
+              description: Premium-rate, or a prefix on our high-risk list (satellite, remote and high-cost destinations often abused for revenue-share fraud)
+            reasons:
+              type: array
+              items:
+                type: string
+          required:
+            - blocked
+            - sanctioned
+            - highRisk
+            - reasons
+        pricing:
+          type: object
+          properties:
+            voice:
+              type: object
+              properties:
+                rate:
+                  type: string
+                  description: 'USD, 6 decimals: per minute for voice, per message for SMS'
+                currency:
+                  type: string
+                  enum:
+                    - USD
+                unit:
+                  type: string
+                  enum:
+                    - min
+                    - msg
+                billingIncrement:
+                  type: string
+                  nullable: true
+                  description: e.g. "60/60"; null when the listing does not state one
+                destination:
+                  type: string
+                  description: The destination the number matched on that route, e.g. "United Kingdom-Mobile"
+                routeId:
+                  type: string
+                  format: uuid
+                  description: The cheapest public route that serves the number (see GET /routes/{id})
+                routesServing:
+                  type: integer
+                  description: How many public routes serve the number
+                network:
+                  type: object
+                  properties:
+                    mccMnc:
+                      type: string
+                      nullable: true
+                      description: Mobile network code (MCC-MNC) the price is for, e.g. "234-10"; null when unknown
+                    operator:
+                      type: string
+                      nullable: true
+                      description: Network name from public number-range data, e.g. "O2"
+                    source:
+                      type: string
+                      enum:
+                        - range
+                        - hlr
+                        - none
+                      description: range = number-range data; none = not determined
+                    rateBasis:
+                      type: string
+                      enum:
+                        - network
+                        - all_operators
+                        - country
+                      description: network = that network's own rate; all_operators = the route's rate for networks it does not list separately; country = the route's price for other or unknown networks
+                  required:
+                    - mccMnc
+                    - operator
+                    - source
+                    - rateBasis
+                  description: 'SMS only: the network `rate` is for, when the route prices per network; null otherwise'
+                  nullable: true
+                countryRate:
+                  type: string
+                  nullable: true
+                  description: 'SMS only: the route''s price for other or unknown networks (USD, 6 decimals), when it prices per network'
+              required:
+                - rate
+                - currency
+                - unit
+                - billingIncrement
+                - destination
+                - routeId
+                - routesServing
+              nullable: true
+              description: The cheapest live public route for the number, or null when none serves it
+            sms:
+              type: object
+              properties:
+                rate:
+                  type: string
+                  description: 'USD, 6 decimals: per minute for voice, per message for SMS'
+                currency:
+                  type: string
+                  enum:
+                    - USD
+                unit:
+                  type: string
+                  enum:
+                    - min
+                    - msg
+                billingIncrement:
+                  type: string
+                  nullable: true
+                  description: e.g. "60/60"; null when the listing does not state one
+                destination:
+                  type: string
+                  description: The destination the number matched on that route, e.g. "United Kingdom-Mobile"
+                routeId:
+                  type: string
+                  format: uuid
+                  description: The cheapest public route that serves the number (see GET /routes/{id})
+                routesServing:
+                  type: integer
+                  description: How many public routes serve the number
+                network:
+                  type: object
+                  properties:
+                    mccMnc:
+                      type: string
+                      nullable: true
+                      description: Mobile network code (MCC-MNC) the price is for, e.g. "234-10"; null when unknown
+                    operator:
+                      type: string
+                      nullable: true
+                      description: Network name from public number-range data, e.g. "O2"
+                    source:
+                      type: string
+                      enum:
+                        - range
+                        - hlr
+                        - none
+                      description: range = number-range data; none = not determined
+                    rateBasis:
+                      type: string
+                      enum:
+                        - network
+                        - all_operators
+                        - country
+                      description: network = that network's own rate; all_operators = the route's rate for networks it does not list separately; country = the route's price for other or unknown networks
+                  required:
+                    - mccMnc
+                    - operator
+                    - source
+                    - rateBasis
+                  description: 'SMS only: the network `rate` is for, when the route prices per network; null otherwise'
+                  nullable: true
+                countryRate:
+                  type: string
+                  nullable: true
+                  description: 'SMS only: the route''s price for other or unknown networks (USD, 6 decimals), when it prices per network'
+              required:
+                - rate
+                - currency
+                - unit
+                - billingIncrement
+                - destination
+                - routeId
+                - routesServing
+              nullable: true
+              description: The cheapest live public route for the number, or null when none serves it
+          required:
+            - voice
+            - sms
+        method:
+          type: string
+          enum:
+            - prefix
+          description: 'Always prefix: no carrier network query is made'
+        cachedAt:
+          type: string
+          description: When this answer was computed. Answers are cached for up to 10 minutes
+      required:
+        - input
+        - valid
+        - reason
+        - e164
+        - internationalFormat
+        - country
+        - numberType
+        - numberTypeConfidence
+        - operator
+        - network
+        - matchedPrefix
+        - risk
+        - pricing
+        - method
+        - cachedAt
     LedgerTransaction:
       type: object
       properties:
@@ -81955,6 +83596,221 @@ components:
         - effective
         - decidedBy
         - mode
+    PricingDestination:
+      type: object
+      properties:
+        slug:
+          type: string
+          description: URL slug from the country name, e.g. "pakistan"
+        country:
+          type: string
+        countryCode:
+          type: string
+          description: E.164 country calling code, digits only
+        routes:
+          type: integer
+          description: Live routes that price at least one number type
+        lowest:
+          type: string
+          description: Lowest mobile, fixed or country-wide rate
+        lowestBand:
+          type: string
+          enum:
+            - mobile
+            - fixed
+            - countryWide
+          description: '`mobile` and `fixed`: rate-sheet rows named for that number type. `countryWide`: the bare country row (or a single-price listing), which prices every number without a more specific row.'
+        unit:
+          type: string
+          enum:
+            - min
+            - msg
+          description: Per minute (voice) or per message (SMS)
+      required:
+        - slug
+        - country
+        - countryCode
+        - routes
+        - lowest
+        - lowestBand
+        - unit
+    PricingDestinationDetail:
+      type: object
+      properties:
+        slug:
+          type: string
+          description: URL slug from the country name, e.g. "pakistan"
+        country:
+          type: string
+        countryCode:
+          type: string
+          description: E.164 country calling code, digits only
+        routes:
+          type: integer
+          description: Live routes that price at least one number type
+        lowest:
+          type: string
+          description: Lowest mobile, fixed or country-wide rate
+        lowestBand:
+          type: string
+          enum:
+            - mobile
+            - fixed
+            - countryWide
+          description: '`mobile` and `fixed`: rate-sheet rows named for that number type. `countryWide`: the bare country row (or a single-price listing), which prices every number without a more specific row.'
+        unit:
+          type: string
+          enum:
+            - min
+            - msg
+          description: Per minute (voice) or per message (SMS)
+        type:
+          type: string
+          enum:
+            - voice
+            - sms
+        highest:
+          type: string
+          description: Highest route "from" price in the destination
+        bands:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                enum:
+                  - mobile
+                  - fixed
+                  - countryWide
+                description: '`mobile` and `fixed`: rate-sheet rows named for that number type. `countryWide`: the bare country row (or a single-price listing), which prices every number without a more specific row.'
+              from:
+                type: string
+                description: USD, 6-decimal string, e.g. "0.020370"
+              routes:
+                type: integer
+            required:
+              - key
+              - from
+              - routes
+          description: Lowest rate per number type
+        operators:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              from:
+                type: string
+                description: USD, 6-decimal string, e.g. "0.020370"
+              routes:
+                type: integer
+            required:
+              - name
+              - from
+              - routes
+          description: Mobile operators broken out on at least two routes, cheapest first, at most 12
+        cliTypes:
+          type: array
+          items:
+            type: object
+            properties:
+              cliType:
+                type: string
+              routes:
+                type: integer
+            required:
+              - cliType
+              - routes
+          description: Caller-ID handling the sellers state (voice only)
+        increments:
+          type: array
+          items:
+            type: object
+            properties:
+              increment:
+                type: string
+              routes:
+                type: integer
+            required:
+              - increment
+              - routes
+          description: Billing increments, e.g. "1/1" (voice only)
+        routesWithStatedAsr:
+          type: integer
+          description: Routes whose seller states an ASR
+        otherBreakouts:
+          type: integer
+          description: Named breakouts that are not a headline number type (toll-free, premium, cities)
+        topRoutes:
+          type: array
+          items:
+            type: object
+            properties:
+              rank:
+                type: integer
+              from:
+                type: string
+                description: USD, 6-decimal string, e.g. "0.020370"
+              mobileFrom:
+                type: string
+                nullable: true
+                description: USD, 6-decimal string, e.g. "0.020370"
+              cliType:
+                type: string
+              billingIncrement:
+                type: string
+                nullable: true
+              routeType:
+                type: string
+                description: Quality tier the route is listed under
+              statedAsr:
+                type: string
+                nullable: true
+                description: Seller-stated ASR %, not measured
+              statedAcd:
+                type: string
+                nullable: true
+                description: Seller-stated ACD in seconds, not measured
+            required:
+              - rank
+              - from
+              - mobileFrom
+              - cliType
+              - billingIncrement
+              - routeType
+              - statedAsr
+              - statedAcd
+          description: The five cheapest routes, as anonymous facts
+        related:
+          type: array
+          items:
+            $ref: '#/components/schemas/PricingDestination'
+          description: Destinations in the same world numbering zone
+        updatedAt:
+          type: string
+          format: date-time
+          description: ISO-8601 timestamp (UTC)
+      required:
+        - slug
+        - country
+        - countryCode
+        - routes
+        - lowest
+        - lowestBand
+        - unit
+        - type
+        - highest
+        - bands
+        - operators
+        - cliTypes
+        - increments
+        - routesWithStatedAsr
+        - otherBreakouts
+        - topRoutes
+        - related
+        - updatedAt
     SystemHealth:
       type: object
       properties:
@@ -83137,6 +84993,9 @@ x-error-codes:
   - code: FORBIDDEN
     status: 403
     meaning: 'Authenticated but not allowed. For a scoped API key the message names the missing scope ("API key missing required scope: sms:send"); session-only endpoints answer "This action requires an interactive session (dashboard login), not an API key."'
+  - code: TEST_KEY_NOT_ALLOWED
+    status: 403
+    meaning: 'A test key (wmmn_test_sk_) asked for something that has no test mode: a Switch change (any non-GET request under /switch) or an x402 top-up, which settles real USDC into the live balance. Use a live key. Test keys may still read Switch data.'
   - code: CSRF_BLOCKED
     status: 403
     meaning: A cross-site request tried to use the browser refresh cookie.
