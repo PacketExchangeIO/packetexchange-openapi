@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="assets/logo.png" alt="PacketExchange" width="96" height="96">
+  <a href="https://packetexchange.io"><img src="assets/banner.png" alt="PacketExchange OpenAPI specification" width="100%"></a>
 </p>
-
-<h1 align="center">PacketExchange OpenAPI Specification</h1>
 
 <p align="center">The OpenAPI 3.0 description of the PacketExchange voice and SMS marketplace API.</p>
 
