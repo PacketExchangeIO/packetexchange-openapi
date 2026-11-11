@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/PacketExchangeIO/packetexchange-openapi/actions/workflows/ci.yml"><img src="https://github.com/PacketExchangeIO/packetexchange-openapi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/API%20version-1.2.0-informational.svg" alt="API version 1.2.0"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/API%20version-1.3.0-informational.svg" alt="API version 1.3.0"></a>
   <img src="https://img.shields.io/badge/OpenAPI-3.0.3-6BA539.svg" alt="OpenAPI 3.0.3">
 </p>
 
@@ -22,21 +22,22 @@ For the official SDKs, see [packetexchange-node](https://github.com/PacketExchan
 | [`spec/json/packetexchange.json`](spec/json/packetexchange.json) | OpenAPI 3.0.3, JSON |
 | [`spec/yaml/packetexchange.yaml`](spec/yaml/packetexchange.yaml) | OpenAPI 3.0.3, YAML (same content) |
 
-Both files describe API version **1.2.0**: 639 paths and 788 operations. The base URL is `https://packetexchange.io/api/v1`.
+Both files describe API version **1.3.0**: 680 paths and 830 operations. The base URL is `https://packetexchange.io/api/v1`.
 
 ## What's covered
 
 Every customer-facing operation, each with a summary, its access rule and a response schema:
 
 - **Marketplace:** browse and search voice and SMS routes, route details, market summaries, rate sheets, offers, route access and route reports.
-- **Purchases and routing:** buy access to a route, see usage, and preview which route Smart Routing would pick for a destination.
+- **Purchases and routing:** buy access to a route, see usage, preview which route Smart Routing would pick for a destination, and set least-cost and failover order.
 - **Voice and SMS:** send an SMS and follow its delivery status, place a call (synchronous, or asynchronous with a status endpoint) with call actions (`say`, `play`, `gather`, `pause`, `hangup`), read a one-time passcode by voice call, and the Verify flow (`/verify/start`, `/verify/check`).
 - **Number lookup:** country, line type, network, risk flags and the cheapest voice and SMS price for a number (`/lookup/{number}`).
 - **Phone numbers:** search the number catalogue, buy and manage numbers, and configure their voice and SMS handling.
 - **Account:** balance, API keys and their scopes, API usage, webhooks and delivery logs, notifications.
-- **Billing:** transactions, top-ups, CDR exports and payouts.
+- **Billing:** transactions, top-ups, CDR exports, earnings and the A-Z price list.
 - **Switch:** customers, customer trunks, suppliers, rating, routing, CDRs and analytics, invoicing and operations for accounts on a Switch plan.
-- **Also:** dialer campaigns, CLI tests, do-not-call lists, interconnections, support tickets, compliance and platform status.
+- **Revenue share numbers:** browse, take numbers by id or range, set call delivery and follow live calls.
+- **Also:** dialer campaigns, caller-ID tests, route checks, do-not-call lists, interconnections, support tickets, compliance and platform status.
 
 The document's `info.description` covers authentication, the response envelope, money formatting, rate limits, request ids and the full list of error codes.
 
